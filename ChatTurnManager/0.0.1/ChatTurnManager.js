@@ -51,44 +51,42 @@ var ChatTurnManager =
       Campaign().set("turnorder", JSON.stringify(turns));
     };
 
-    const handleClear = (msg, isGM) => {
-      if (!isGM) return;
-      const turns = Campaign().get("turnorder");
-      setTurns([]);
-      log(`ChatTurnManager: CLEARING: ${turns}`)
-      sendChat('ChatTurnManager', `/w GM Turns cleared. To restore, run <code>!turns-load ${turns}</code>`)
+    const playerName = (playerID) => {
+      const player = getObj("player", playerID);
+      if (!player) return player;
+      return player.get("_displayname");
     };
 
-    const handleLoad = (msg, isGM) => {
-      if (!isGM) return;
-      Campaign().set("turnorder", msg.split(/\s+/, 2)[1]);
-    }
-
-    const handleClean = (msg) => {
-      let turns = getTurns();
-      turns = _.filter(turns, (t) => t.pr != 0);
-      setTurns(turns);
+    const whisperToID = (id, msg) => {
+      const name = id === "GM" ? id : playerName(id);
+      if (!name) return;
+      sendChat("ChatTurnManager", `/w "${name}" ${msg}`);
     };
 
-    const handleBegin = (msg, isGM) => {
-      if (!isGM) return;
-      let turns = getTurns();
-
-      turns = _.filter(turns, (t) => t.custom !== counterName);
-      turns = _.sortBy(turns, (t) => -t.pr);
-      turns.unshift({ id: "-1", custom: counterName, pr: 1, formula: "+1" });
-
-      setTurns(turns);
+    const itemName = (item) => {
+      if (item.id === "-1") return item.custom;
+      const g = getObj("graphic", item.id);
+      if (!g) return null;
+      const name = g.get("name");
+      if (name) return name;
+      const char = getObj("character", g.get("represents"));
+      if (!char) return null;
+      return char.get("name");
     };
 
-    const matchName = (search, name) => {
-      return name && name.toLowerCase().startsWith(search);
-    };
+    const findPrefixIndex = (turns, prefix) =>
+      turns.findIndex((t) => {
+        const name = itemName(t);
+        if (!name) return false;
+        return name.toLowerCase().startsWith(prefix);
+      });
 
-    const addWithFormula = (msg, formula) => {
+    const addWithFormula = (msg, isGM, playerID, formula) => {
       const parts = msg.split(/\s+/);
       parts.shift();
       const newItem = { id: "-1", pr: parseFloat(parts.shift()), formula };
+      if (!isGM) newItem.p = true;
+
       let position = null;
       let search = null;
       if (parts[0].startsWith("--")) {
@@ -99,53 +97,137 @@ var ChatTurnManager =
 
       let turns = getTurns();
       let i = null;
+
       if (search) {
-        i = turns.findIndex((t) => {
-          if (t.id === "-1") return matchName(search, t.custom);
-          const g = getObj("graphic", t.id);
-          if (!g) return false;
-          let name = g.get("name");
-          if (name) return matchName(search, name);
-          else {
-            const char = getObj("character", g.get("represents"));
-            if (!char) return false;
-            return matchName(search, char.get("name"));
-          }
-        });
-        if (i == -1) i = null;
-        else if (position === "after") i++;
+        i = findPrefixIndex(turns, search);
+        if (i == -1) {
+          i = null;
+          whisperToID(playerID, `could not find item prefix “${search}”. Putting “${newItem.custom}” at the end.`);
+        } else if (position === "after") i++;
       }
 
       if (i !== null) turns.splice(i, 0, newItem);
       else turns.push(newItem);
 
       setTurns(turns);
+
+      if (!isGM) {
+        const name = playerName(playerID) || "";
+        let pos = "";
+        if (i !== null) pos = ` in position ${i + 1}`;
+        whisperToID("GM", `Player (${name}) added turn item “${newItem.custom}${pos}”`);
+      }
     };
 
-    const handleUp = (msg) => {
-      addWithFormula(msg, "+1");
+    const handleClear = (msg, isGM, playerID) => {
+      if (!isGM) {
+        whisperToID(playerID, "Only the GM can clear turn data.");
+        return;
+      }
+      const turns = Campaign().get("turnorder");
+      setTurns([]);
+      log(`ChatTurnManager: CLEARING: ${turns}`);
+      whisperToID("GM", `Turns cleared. To restore, run <code>!turns-load ${turns}</code>`);
     };
 
-    const handleDown = (msg) => {
-      addWithFormula(msg, "-1");
+    const handleLoad = (msg, isGM, playerID) => {
+      if (!isGM) {
+        whisperToID(playerID, "Only the GM can load turn data.");
+        return;
+      }
+      Campaign().set("turnorder", msg.split(/\s+/, 2)[1]);
+    };
+
+    const handleAppend = (msg, isGM, playerID) => {
+      if (!isGM) {
+        whisperToID(playerID, "Only the GM can append turn data.");
+        return;
+      }
+
+      try {
+        const data = JSON.parse(msg.split(/\s+/, 2)[1]);
+        turns = getTurns();
+        setTurns(turns.concat(data));
+      } catch (e) {
+        whisperToID(playerID, `ERROR appending data: '${e.message}'`);
+      }
+    };
+
+    const handleClean = (msg) => {
+      let turns = getTurns();
+      turns = _.filter(turns, (t) => t.pr <= 0);
+      setTurns(turns);
+    };
+
+    const handleBegin = (msg, isGM) => {
+      if (!isGM) {
+        whisperToID(playerID, "Only the GM can start the counter.");
+        return;
+      }
+      let turns = getTurns();
+
+      turns = _.filter(turns, (t) => t.custom !== counterName);
+      turns = _.sortBy(turns, (t) => -t.pr);
+      turns.unshift({ id: "-1", custom: counterName, pr: 1, formula: "+1" });
+
+      setTurns(turns);
+    };
+
+    const handleUp = (msg, isGM, playerID) => {
+      addWithFormula(msg, isGM, playerID, "+1");
+    };
+
+    const handleDown = (msg, isGM, playerID) => {
+      addWithFormula(msg, isGM, playerID, "-1");
+    };
+
+    const handleRemove = (msg, isGM, playerID) => {
+      const parts = msg.split(/\s+/, 2);
+      const prefix = parts[1];
+      if (!prefix) {
+        whisperToID(playerID, `missing item to remove!`);
+        return;
+      }
+
+      const turns = getTurns();
+      const i = findPrefixIndex(turns, prefix);
+      if (i === -1) {
+        whisperToID(playerID, `Cannot find prefix “${prefix}” to remove.`);
+        return;
+      }
+
+      if (isGM || turns[i].p) {
+        turns.splice(i, 1);
+        setTurns(turns);
+        return;
+      }
+      const name = itemName(turns[i]) || "that item";
+      whisperToID(playerID, `You do not have permission to remove ${name}. Please ask the GM to do it.`);
     };
 
     const handlers = {
       handleClear,
       handleLoad,
+      handleAppend,
       handleClean,
       handleBegin,
       handleUp,
       handleDown,
+      handleRemove,
       handleStart: handleBegin,
+      handleRm: handleRemove,
     };
 
     const handleMessage = (msg) => {
       if (msg.type != "api" || !msg.content.startsWith("!turns")) return;
       const cmd = msg.content.split(/\s+/)[0].substring(7);
       const handler = handlers[`handle${cmd.charAt(0).toUpperCase()}${cmd.slice(1)}`];
-      if (handler) handler(msg.content, playerIsGM(msg.playerid));
-      else log(`ChatTurnManager: unknown cmd: ${cmd}`);
+      if (handler) {
+        handler(msg.content, playerIsGM(msg.playerid), msg.playerid);
+        return;
+      }
+      log(`ChatTurnManager: unknown cmd: ${cmd}`);
+      whisperToID(playerID, `Unknown command: ${cmd}`);
     };
 
     const registerHandlers = () => {
