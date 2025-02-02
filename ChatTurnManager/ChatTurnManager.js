@@ -115,7 +115,7 @@ var ChatTurnManager =
         const name = playerName(playerID) || "";
         let pos = "";
         if (i !== null) pos = ` in position ${i + 1}`;
-        whisperToID("GM", `Player (${name}) added turn item “${newItem.custom}${pos}”`);
+        whisperToID("GM", `Player (${name}) added turn item “${newItem.custom}”${pos}`);
       }
     };
 
